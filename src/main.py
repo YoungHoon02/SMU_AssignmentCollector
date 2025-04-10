@@ -12,6 +12,17 @@ from tkinter import ttk, font
 import webbrowser
 from threading import Thread
 
+shared_data = {
+    "contents": [],  # 수집된 콘텐츠 목록
+    "running": True,  # 크롤링 실행 상태
+    "exit": False,  # 프로그램 종료 여부
+    "updated": False,  # HUD 업데이트 여부
+    "crawling_complete": False,  # 크롤링 완료 여부
+    "driver": None,  # Selenium 드라이버 객체
+    "control_var": None,  # 컨트롤 버튼 텍스트 변수
+    "control_button": None  # 컨트롤 버튼 객체
+}
+
 def calculate_remaining_time(deadline):
     """마감일까지 남은 시간을 계산 (Nd HH:MM 형식)"""
     now = datetime.datetime.now()
@@ -88,6 +99,7 @@ def create_hud(shared_data):
     title_label.pack(side=tk.LEFT, pady=(0, 10))
     
     control_var = tk.StringVar(value="중단")
+    shared_data["control_var"] = control_var  # shared_data에 control_var 저장
     
     def toggle_crawl():
         """크롤링 시작/중단 토글."""
@@ -108,6 +120,7 @@ def create_hud(shared_data):
         width=10
     )
     control_button.pack(side=tk.RIGHT, padx=5, pady=(0, 10))
+    shared_data["control_button"] = control_button  # shared_data에 control_button 저장
     
     main_frame = ttk.Frame(root)
     main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -272,23 +285,26 @@ def create_hud(shared_data):
                 deadline_date = item_deadlines[item_id]
                 deadline = datetime.datetime.combine(deadline_date, datetime.time(23, 59, 59))
                 remaining = calculate_remaining_time(deadline)
-                
+
                 current_values = tree.item(item_id, 'values')
                 new_values = list(current_values)
                 new_values[5] = remaining
                 tree.item(item_id, values=new_values)
             except:
                 pass
-        
+
+        # 크롤링 완료 시 버튼 상태 변경 및 브라우저 종료
         if shared_data.get("crawling_complete", False):
-            control_var.set("완료됨")
-            control_button.config(state=tk.DISABLED)
-        else:
-            control_button.config(state=tk.NORMAL)
-        
+            shared_data["control_var"].set("완료됨")
+            shared_data["control_button"].config(state=tk.DISABLED)
+            if "driver" in shared_data and shared_data["driver"]:
+                shared_data["driver"].quit()  # Selenium 브라우저 종료
+                shared_data["driver"] = None
+            return
+
         if shared_data.get("exit", False):
             return
-        
+
         root.after(60000, update_remaining_time)
     
     def check_data_update():
@@ -329,14 +345,15 @@ def main():
     options.add_argument('--disable-notifications')
     
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
-    
-    shared_data = {
+    shared_data["driver"] = driver  # shared_data에 드라이버 저장
+
+    shared_data.update({
         "contents": [],
         "running": True,
         "exit": False,
         "updated": False,
         "crawling_complete": False
-    }
+    })
     
     hud_thread = Thread(target=create_hud, args=(shared_data,))
     hud_thread.daemon = True
@@ -723,7 +740,25 @@ def main():
         shared_data["contents"] = all_contents
         shared_data["updated"] = True
         
-        shared_data["crawling_complete"] = True
+        shared_data["crawling_complete"] = True  # 크롤링 완료 플래그 설정
+        print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
+
+        # 크롤링 완료 즉시 버튼 상태 변경 및 브라우저 종료 (메인 스레드에서 직접 처리)
+        if shared_data["control_var"] and shared_data["control_button"]:
+            shared_data["control_var"].set("완료됨")
+            shared_data["control_button"].config(state=tk.DISABLED)
+        
+        # 드라이버 종료를 즉시 실행
+        if shared_data["driver"]:
+            shared_data["driver"].quit()
+            shared_data["driver"] = None
+            print("Selenium 브라우저가 종료되었습니다.")
+
+        while not shared_data["exit"]:
+            if shared_data.get("crawling_complete") and not shared_data["running"]:
+                print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
+                break
+            time.sleep(0.5)
         
         print("\n===== 수집 완료 =====")
         print(f"총 {len(all_contents)}개 항목 발견")
@@ -749,9 +784,8 @@ def main():
         print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
         
         while not shared_data["exit"]:
-            if shared_data.get("crawling_complete") and shared_data.get("running") == False:
+            if shared_data.get("crawling_complete") and not shared_data["running"]:
                 print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
-                driver.quit()
                 break
             time.sleep(0.5)  # 상태 확인 주기를 더 짧게 설정
     
