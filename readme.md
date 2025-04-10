@@ -24,7 +24,7 @@ SMU 과제 수집기는 학생 과제를 빠르게 처리, 미처리 된 정보�
 
 1. 이 저장소를 클론 또는 다운로드합니다:
 ```bash
-git clone https://github.com/yourusername/SMU_AssignmentCollector.git
+git clone https://github.com/YoungHoon02/SMU_AssignmentCollector.git
 cd SMU_AssignmentCollector
 ```
 
@@ -38,6 +38,10 @@ pip install -r requirements.txt
 1. 프로그램을 실행합니다:
 ```bash
 python src/main.py
+```
+혹은 bat 파일을 실행합니다.
+```bash
+run.bat
 ```
 
 2. 자동으로 Chrome 브라우저가 열리고, eCampus 로그인 페이지가 표시됩니다.
@@ -54,7 +58,7 @@ python src/main.py
 
 ## HUD 사용법
 
-- **과제 목록**: 마감일 순으로 정렬된 과제 및 콘텐츠를 표시합니다.
+- **과제 목록**: 1주일 이내 마감일 순으로 정렬된 과제 및 콘텐츠를 표시합니다.
 - **상세 정보**: 목록에서 항목을 선택하면 하단에 상세 정보가 표시됩니다.
 - **더보기 버튼**: 선택한 항목의 원본 페이지로 이동합니다.
 - **남은 시간**: 마감까지 남은 시간이 실시간으로 업데이트됩니다.
