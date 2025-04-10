@@ -106,7 +106,10 @@ def create_hud(shared_data):
         if control_var.get() == "중단":
             control_var.set("재시작")
             shared_data["running"] = False
+            shared_data["updated"] = True  # 중단 시에도 즉시 데이터 갱신 플래그 설정
             status_label.config(text="크롤링이 중단되었습니다. 재시작 버튼을 누르면 계속합니다.")
+            # 즉시 트리 데이터 업데이트
+            update_tree_data()
         else:
             control_var.set("중단")
             shared_data["running"] = True
