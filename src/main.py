@@ -8,9 +8,9 @@ import time
 import re
 import datetime
 import tkinter as tk
-from tkinter import ttk, font
+from tkinter import ttk, font, StringVar, IntVar
 import webbrowser
-from threading import Thread
+from threading import Thread, Event
 
 shared_data = {
     "contents": [],  # 수집된 콘텐츠 목록
@@ -20,7 +20,11 @@ shared_data = {
     "crawling_complete": False,  # 크롤링 완료 여부
     "driver": None,  # Selenium 드라이버 객체
     "control_var": None,  # 컨트롤 버튼 텍스트 변수
-    "control_button": None  # 컨트롤 버튼 객체
+    "control_button": None,  # 컨트롤 버튼 객체
+    "login_attempted": False,  # 로그인 시도 여부
+    "login_successful": False,  # 로그인 성공 여부
+    "login_event": None,  # 로그인 이벤트 객체
+    "due_period": 7  # 기본값 1주일(7일)
 }
 
 def calculate_remaining_time(deadline):
@@ -69,6 +73,7 @@ def create_hud(shared_data):
     root.title("SMU eCampus 마감 예정 콘텐츠")
     root.geometry("950x600")  # 창 크기 조정
     root.minsize(750, 400)
+    root.configure(background='#f5f5f5')  # 배경색 설정
     
     font_normal = ('맑은 고딕', 10)
     font_bold = ('맑은 고딕', 11, 'bold')
@@ -92,10 +97,210 @@ def create_hud(shared_data):
     style.configure("TLabelframe.Label", font=font_normal)
     style.configure("TButton", font=font_normal)
     
-    control_frame = ttk.Frame(root)
-    control_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+    # 프레임 생성
+    login_frame = ttk.LabelFrame(root, text="로그인")
+    login_frame.pack(fill=tk.X, padx=10, pady=10)
     
-    title_label = ttk.Label(control_frame, text="1주일 이내 마감 예정 콘텐츠 목록", font=font_title)
+    # 로그인 폼 생성
+    login_form_frame = ttk.Frame(login_frame)
+    login_form_frame.pack(fill=tk.X, padx=10, pady=10)
+    
+    # 기간 선택 옵션 추가
+    period_frame = ttk.Frame(login_form_frame)
+    period_frame.grid(row=0, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+    
+    period_label = ttk.Label(period_frame, text="마감 기간 선택:")
+    period_label.pack(side=tk.LEFT, padx=(0, 10))
+    
+    period_var = IntVar(value=7)  # 기본값 7일
+    
+    def update_period(value):
+        shared_data["due_period"] = value
+        print(f"마감 기간을 {value}일로 설정했습니다.")
+    
+    one_week_btn = ttk.Radiobutton(
+        period_frame, 
+        text="1주일", 
+        variable=period_var, 
+        value=7, 
+        command=lambda: update_period(7)
+    )
+    one_week_btn.pack(side=tk.LEFT, padx=(0, 5))
+    
+    two_week_btn = ttk.Radiobutton(
+        period_frame, 
+        text="2주일", 
+        variable=period_var, 
+        value=14, 
+        command=lambda: update_period(14)
+    )
+    two_week_btn.pack(side=tk.LEFT)
+    
+    # 아이디 입력
+    id_label = ttk.Label(login_form_frame, text="아이디:")
+    id_label.grid(row=1, column=0, padx=5, pady=5, sticky=tk.W)
+    id_var = StringVar()
+    id_entry = ttk.Entry(login_form_frame, textvariable=id_var, width=30)
+    id_entry.grid(row=1, column=1, padx=5, pady=5, sticky=tk.W)
+    id_entry.focus()  # 초기 포커스 설정
+    
+    # 비밀번호 입력
+    pw_label = ttk.Label(login_form_frame, text="비밀번호:")
+    pw_label.grid(row=2, column=0, padx=5, pady=5, sticky=tk.W)
+    pw_var = StringVar()
+    pw_entry = ttk.Entry(login_form_frame, textvariable=pw_var, width=30, show="*")
+    pw_entry.grid(row=2, column=1, padx=5, pady=5, sticky=tk.W)
+    
+    # 로그인 상태 메시지
+    login_status_var = StringVar(value="로그인이 필요합니다.")
+    login_status = ttk.Label(login_form_frame, textvariable=login_status_var)
+    login_status.grid(row=3, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+    
+    # 로그인 버튼
+    def attempt_login():
+        userid = id_var.get().strip()
+        password = pw_var.get().strip()
+        
+        if not userid or not password:
+            login_status_var.set("아이디와 비밀번호를 모두 입력해주세요.")
+            return
+        
+        login_status_var.set("로그인을 시도하고 있습니다. 잠시만 기다려주세요...")
+        login_button.config(state=tk.DISABLED)
+        
+        try:
+            driver = shared_data.get("driver")
+            if not driver:
+                login_status_var.set("브라우저 연결 실패")
+                login_button.config(state=tk.NORMAL)
+                return
+            
+            print("로그인 시도 중... (ID: " + userid + ")")
+            
+            # 로그인 페이지에 있는지 확인
+            if "login.php" not in driver.current_url:
+                print("로그인 페이지로 이동합니다.")
+                driver.get("https://ecampus.smu.ac.kr/login.php")
+                wait_for_page_load(driver)
+            
+            # 페이지 소스 출력하여 디버깅
+            print("로그인 페이지 HTML 요소 확인:")
+            username_fields = driver.find_elements(By.ID, "input-username") or driver.find_elements(By.CSS_SELECTOR, "input[name='username']")
+            password_fields = driver.find_elements(By.ID, "input-password") or driver.find_elements(By.CSS_SELECTOR, "input[name='password']")
+            
+            print(f"ID 필드 발견: {len(username_fields)}")
+            print(f"비밀번호 필드 발견: {len(password_fields)}")
+            
+            if not username_fields or not password_fields:
+                print("로그인 폼 요소를 찾을 수 없습니다. 페이지 소스 일부:")
+                print(driver.page_source[:500])
+                login_status_var.set("로그인 폼을 찾을 수 없습니다. 새로고침 후 다시 시도하세요.")
+                login_button.config(state=tk.NORMAL)
+                return
+            
+            # 아이디 입력
+            id_field = username_fields[0]
+            id_field.clear()
+            id_field.send_keys(userid)
+            print("아이디 입력 완료")
+            login_status_var.set("아이디 입력 완료, 비밀번호 처리 중...")
+            root.update()
+            
+            # 비밀번호 입력
+            pw_field = password_fields[0]
+            pw_field.clear()
+            pw_field.send_keys(password)
+            print("비밀번호 입력 완료")
+            login_status_var.set("로그인 정보 입력 완료, 로그인 시도 중...")
+            root.update()
+            
+            # 로그인 버튼 찾기
+            login_buttons = driver.find_elements(By.CSS_SELECTOR, "button[type='submit'], input[type='submit'], .btn-login")
+            if not login_buttons:
+                print("로그인 버튼을 찾을 수 없습니다.")
+                login_status_var.set("로그인 버튼을 찾을 수 없습니다.")
+                login_button.config(state=tk.NORMAL)
+                return
+            
+            # 로그인 버튼 클릭
+            print("로그인 버튼 클릭")
+            login_status_var.set("로그인 진행 중입니다. 잠시만 기다려주세요...")
+            root.update()
+            login_buttons[0].click()
+            
+            # 로그인 결과 확인
+            print("로그인 결과 확인 중...")
+            login_status_var.set("로그인 확인 중입니다. 잠시만 기다려주세요...")
+            root.update()
+            time.sleep(5)  # 로그인 처리를 위한 대기 시간 증가
+            
+            current_url = driver.current_url
+            print(f"현재 URL: {current_url}")
+            
+            if "ecampus.smu.ac.kr/login" not in current_url:
+                print("로그인 성공으로 판단됨")
+                login_status_var.set("로그인 성공! 데이터를 불러오는 중...")
+                shared_data["login_successful"] = True
+                
+                # UI 전환 - 로그인 폼을 제거하고 콘텐츠 화면 표시
+                login_frame.pack_forget()
+                
+                # 기본 컨트롤 프레임과 기타 UI 요소 표시
+                control_frame.pack(fill=tk.X, padx=10, pady=(10, 0))
+                main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+                separator1.pack(fill=tk.X, padx=10, pady=(0, 10))
+                details_frame.pack(fill=tk.X, padx=10, pady=10)
+                separator2.pack(fill=tk.X, padx=10, pady=(0, 10))
+                status_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=5)
+                
+                # 트리뷰와 스크롤바 다시 설정
+                tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+                scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+                hscrollbar.pack(side=tk.BOTTOM, fill=tk.X)
+                
+                # 상태 메시지 설정
+                status_label.config(text="데이터를 불러오는 중")
+                animate_loading_text()  # 애니메이션 시작
+                root.update()
+            else:
+                # 로그인 실패 확인
+                print("로그인 실패 - 페이지에 오류 메시지 확인 중")
+                error_elements = driver.find_elements(By.CSS_SELECTOR, ".loginerrors, .alert, .alert-danger, .error")
+                
+                error_message = "알 수 없는 오류로 로그인에 실패했습니다."
+                if error_elements:
+                    error_message = error_elements[0].text
+                    print(f"오류 메시지: {error_message}")
+                
+                login_status_var.set(f"로그인 실패: {error_message}")
+                login_button.config(state=tk.NORMAL)
+                shared_data["login_successful"] = False
+        
+        except Exception as e:
+            print(f"로그인 시도 중 예외 발생: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            login_status_var.set(f"로그인 오류: {str(e)}")
+            login_button.config(state=tk.NORMAL)
+            shared_data["login_successful"] = False
+        
+        shared_data["login_attempted"] = True
+        if shared_data["login_event"]:
+            shared_data["login_event"].set()
+
+    login_button = ttk.Button(login_form_frame, text="로그인", command=attempt_login)
+    login_button.grid(row=2, column=2, padx=5, pady=5)
+    
+    # 엔터키 바인딩
+    def on_enter(event):
+        attempt_login()
+    pw_entry.bind("<Return>", on_enter)
+    id_entry.bind("<Return>", lambda e: pw_entry.focus())
+    
+    # 컨트롤 프레임 (초기에는 숨김)
+    control_frame = ttk.Frame(root)
+    
+    title_label = ttk.Label(control_frame, text="마감 예정 콘텐츠 목록", font=font_title)
     title_label.pack(side=tk.LEFT, pady=(0, 10))
     
     control_var = tk.StringVar(value="중단")
@@ -114,7 +319,8 @@ def create_hud(shared_data):
             control_var.set("중단")
             shared_data["running"] = True
             shared_data["updated"] = True  # 재시작 시 데이터 갱신 플래그 설정
-            status_label.config(text="크롤링이 다시 시작되었습니다...")
+            status_label.config(text="크롤링이 다시 시작되었습니다")
+            animate_loading_text()  # 애니메이션 다시 시작
     
     control_button = ttk.Button(
         control_frame, 
@@ -126,19 +332,10 @@ def create_hud(shared_data):
     shared_data["control_button"] = control_button  # shared_data에 control_button 저장
     
     main_frame = ttk.Frame(root)
-    main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
     separator1 = ttk.Separator(root, orient=tk.HORIZONTAL)
-    separator1.pack(fill=tk.X, padx=10, pady=(0, 10))
-
     details_frame = ttk.LabelFrame(root, text="상세 정보")
-    details_frame.pack(fill=tk.X, padx=10, pady=10)
-
     separator2 = ttk.Separator(root, orient=tk.HORIZONTAL)
-    separator2.pack(fill=tk.X, padx=10, pady=(0, 10))
-
     status_frame = ttk.Frame(root)
-    status_frame.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=5)
     
     # HUD 칼럼 재구성 및 스타일 개선
     columns = ('course', 'title', 'type', 'submission', 'due_date', 'remaining_time')
@@ -216,7 +413,10 @@ def create_hud(shared_data):
             
             item_deadlines[item_id] = deadline_date
         
-        status_label.config(text=f"총 {len(shared_data['contents'])}개의 콘텐츠가 1주일 이내 마감 예정입니다.")
+        # 타이틀 변경으로 여기 수정
+        due_period = shared_data.get("due_period", 7)
+        title_label.config(text=f"{due_period}일 이내 마감 예정 콘텐츠 목록")
+        status_label.config(text=f"총 {len(shared_data['contents'])}개의 콘텐츠가 {due_period}일 이내 마감 예정입니다.")
     
     def on_tree_select(event):
         try:
@@ -274,12 +474,32 @@ def create_hud(shared_data):
     more_button.pack(pady=5)
     more_button.link = None
     
+    # 로딩 상태 변수
+    loading_dots_state = 0
+    
     status_label = ttk.Label(
         status_frame, 
         text="크롤링을 시작합니다...",
         font=font_normal
     )
     status_label.pack(side=tk.LEFT)
+    
+    def animate_loading_text():
+        """로딩 텍스트에 애니메이션 효과를 추가합니다."""
+        nonlocal loading_dots_state
+        if not shared_data["running"] or shared_data.get("crawling_complete", False) or shared_data.get("exit", False):
+            return
+            
+        dots = "." * (loading_dots_state % 4)
+        spaces = " " * (3 - len(dots))
+        
+        current_text = status_label.cget("text")
+        base_text = current_text.rstrip(" .")
+        
+        status_label.config(text=f"{base_text}{dots}{spaces}")
+        loading_dots_state += 1
+        
+        root.after(500, animate_loading_text)
     
     def update_remaining_time():
         """남은 시간을 업데이트하고 크롤링 상태를 확인합니다."""
@@ -341,21 +561,34 @@ def wait_for_page_load(driver, timeout=10):
     )
 
 def main():
+    # Headless 모드 설정
     options = webdriver.ChromeOptions()
+    options.add_argument('--headless=new')  # 최신 Headless 모드 사용
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-extensions')
     options.add_argument('--disable-infobars')
     options.add_argument('--disable-notifications')
-    
+    options.add_argument('--window-size=1920,1080')  # 해상도 설정
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36")
+
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
     shared_data["driver"] = driver  # shared_data에 드라이버 저장
+
+    # 로그인 이벤트 생성
+    login_event = Event()
+    shared_data["login_event"] = login_event
 
     shared_data.update({
         "contents": [],
         "running": True,
         "exit": False,
         "updated": False,
-        "crawling_complete": False
+        "crawling_complete": False,
+        "login_attempted": False,
+        "login_successful": False,
+        "due_period": 7  # 기본값 1주일
     })
     
     hud_thread = Thread(target=create_hud, args=(shared_data,))
@@ -365,38 +598,29 @@ def main():
     try:
         driver.get("https://ecampus.smu.ac.kr/login.php")
         wait_for_page_load(driver)
-        print("로그인 페이지가 열렸습니다. 직접 로그인해 주세요.")
+        print("로그인 페이지가 열렸습니다. HUD에서 로그인 정보를 입력해 주세요.")
         
-        login_url = driver.current_url
+        # 로그인 완료 대기
+        login_timeout = 300  # 5분
+        print(f"로그인 입력을 {login_timeout}초 동안 기다립니다...")
+        login_success = login_event.wait(timeout=login_timeout)
         
-        print("로그인을 기다리는 중...")
-        timeout = 300
-        start_time = time.time()
-        
-        while time.time() - start_time < timeout and not shared_data["exit"]:
-            current_url = driver.current_url
-            if current_url == "https://ecampus.smu.ac.kr/":
-                print("로그인이 감지되었습니다.")
-                wait_for_page_load(driver, 5)
-                break
-            time.sleep(1)
-        else:
-            if shared_data["exit"]:
-                print("사용자에 의해 프로그램이 종료되었습니다.")
-                return
-            print("로그인 시간이 초과되었습니다. 계속하려면 엔터키를 눌러주세요...")
-            input()
-        
-        if shared_data["exit"]: return
+        # timeout 후 로그인 시도 여부 확인
+        if not shared_data.get("login_attempted", False):
+            print("로그인 시간이 초과되었습니다.")
+            return
             
-        current_url = driver.current_url
-        if current_url == "https://ecampus.smu.ac.kr/":
-            print("로그인이 확인되었습니다.")
-        else:
-            print("로그인이 확인되지 않았습니다. 다시 시도해 주세요.")
+        if shared_data["exit"]:
+            print("사용자에 의해 프로그램이 종료되었습니다.")
+            return
+            
+        if not shared_data.get("login_successful", False):
+            print("로그인에 실패했습니다. 프로그램을 종료합니다.")
             return
         
-        print("\n===== 콘텐츠 수집 시작 =====")
+        print("로그인이 성공적으로 완료되었습니다.")
+        due_period = shared_data.get("due_period", 7)
+        print(f"\n===== {due_period}일 이내 마감 콘텐츠 수집 시작 =====")
         
         all_contents = []
         processed_items = set()
@@ -472,7 +696,12 @@ def main():
                                 pass
                         
                         if not deadline:
-                            deadline = datetime.date.today() + datetime.timedelta(days=7)
+                            deadline = datetime.date.today() + datetime.timedelta(days=due_period)
+                        
+                        # 지정된 기간 내에 있는지 확인
+                        diff_days = (deadline - datetime.date.today()).days
+                        if not (0 <= diff_days <= due_period):
+                            continue
                             
                         all_contents.append({
                             "course": course_name,
@@ -693,30 +922,32 @@ def main():
                                     driver.close()
                                     driver.switch_to.window(driver.window_handles[0])
                                 
-                                deadline = datetime.date.today() + datetime.timedelta(days=7)
+                                # 기간 설정 적용
+                                deadline = datetime.date.today() + datetime.timedelta(days=shared_data.get("due_period", 7))
                                 status = "확인필요"
                                 context = item_text
                         
                         if not deadline:
-                            deadline = datetime.date.today() + datetime.timedelta(days=7)
+                            # 기간 설정 적용
+                            deadline = datetime.date.today() + datetime.timedelta(days=shared_data.get("due_period", 7))
                         
+                        # 사용자가 선택한 기간 적용
+                        due_period = shared_data.get("due_period", 7)
                         diff_days = (deadline - datetime.date.today()).days
-                        if 0 <= diff_days <= 7:
-                            print(f"{content_type} 발견: {title}, 마감일: {deadline}")
-                            
-                            all_contents.append({
-                                "course": course_title,
-                                "title": title,
-                                "link": link,
-                                "due_date": str(deadline),
-                                "status": status,
-                                "context": context if 'context' in locals() else item_text,
-                                "type": content_type
-                            })
-                            
-                            all_contents.sort(key=lambda x: x['due_date'])
-                            shared_data["contents"] = all_contents
-                            shared_data["updated"] = True
+                        if not (0 <= diff_days <= due_period):
+                            continue
+                        
+                        print(f"{content_type} 발견: {title}, 마감일: {deadline}")
+                        
+                        all_contents.append({
+                            "course": course_title,
+                            "title": title,
+                            "link": link,
+                            "due_date": str(deadline),
+                            "status": status if 'status' in locals() else "확인필요",
+                            "context": context if 'context' in locals() else item_text,
+                            "type": content_type
+                        })
                     except Exception as e:
                         print(f"활동 항목 처리 오류: {str(e)}")
                         continue
@@ -767,7 +998,7 @@ def main():
         print(f"총 {len(all_contents)}개 항목 발견")
         
         if all_contents:
-            print("\n===== 1주일 이내 마감 예정 콘텐츠 목록 =====")
+            print(f"\n===== {due_period}일 이내 마감 예정 콘텐츠 목록 =====")
             for idx, content in enumerate(all_contents):
                 deadline_date = datetime.datetime.strptime(content['due_date'], '%Y-%m-%d').date()
                 deadline = datetime.datetime.combine(deadline_date, datetime.time(23, 59, 59))
@@ -780,9 +1011,9 @@ def main():
                 print(f"링크: {content['link']}")
                 print("-" * 50)
             
-            print(f"\n총 {len(all_contents)}개의 콘텐츠가 1주일 이내 마감 예정입니다.")
+            print(f"\n총 {len(all_contents)}개의 콘텐츠가 {due_period}일 이내 마감 예정입니다.")
         else:
-            print("\n1주일 이내 마감 예정인 콘텐츠가 없습니다.")
+            print(f"\n{due_period}일 이내 마감 예정인 콘텐츠가 없습니다.")
         
         print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
         
@@ -896,8 +1127,10 @@ def process_bulk_page(driver, url, course_title, content_type, all_contents, pro
                 print(f"날짜 정보 없음: {title}")
                 continue
             
+            # 사용자가 선택한 기간(7일 또는 14일) 내의 항목만 포함
+            due_period = shared_data.get("due_period", 7)
             diff_days = (deadline - today).days
-            if not (0 <= diff_days <= 7):
+            if not (0 <= diff_days <= due_period):
                 continue
             
             status = "확인필요"
