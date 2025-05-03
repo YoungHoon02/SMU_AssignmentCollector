@@ -24,7 +24,9 @@ shared_data = {
     "login_attempted": False,  # 로그인 시도 여부
     "login_successful": False,  # 로그인 성공 여부
     "login_event": None,  # 로그인 이벤트 객체
-    "due_period": 7  # 기본값 1주일(7일)
+    "due_period": 7,  # 기본값 1주일(7일)
+    "login_status_var": None,  # 로그인 상태 메시지 변수
+    "status_label": None  # 상태 메시지 레이블
 }
 
 def calculate_remaining_time(deadline):
@@ -155,6 +157,9 @@ def create_hud(shared_data):
     login_status_var = StringVar(value="로그인이 필요합니다.")
     login_status = ttk.Label(login_form_frame, textvariable=login_status_var)
     login_status.grid(row=3, column=0, columnspan=3, padx=5, pady=5, sticky=tk.W)
+    
+    # 로그인 상태 변수를 shared_data에 저장
+    shared_data["login_status_var"] = login_status_var
     
     # 로그인 버튼
     def attempt_login():
@@ -290,6 +295,9 @@ def create_hud(shared_data):
 
     login_button = ttk.Button(login_form_frame, text="로그인", command=attempt_login)
     login_button.grid(row=2, column=2, padx=5, pady=5)
+    
+    # 로그인 버튼을 shared_data에 저장
+    shared_data["login_button"] = login_button
     
     # 엔터키 바인딩
     def on_enter(event):
@@ -484,6 +492,9 @@ def create_hud(shared_data):
     )
     status_label.pack(side=tk.LEFT)
     
+    # 상태 레이블을 shared_data에 저장
+    shared_data["status_label"] = status_label
+    
     def animate_loading_text():
         """로딩 텍스트에 애니메이션 효과를 추가합니다."""
         nonlocal loading_dots_state
@@ -596,9 +607,45 @@ def main():
     hud_thread.start()
     
     try:
-        driver.get("https://ecampus.smu.ac.kr/login.php")
-        wait_for_page_load(driver)
-        print("로그인 페이지가 열렸습니다. HUD에서 로그인 정보를 입력해 주세요.")
+        try:
+            driver.get("https://ecampus.smu.ac.kr/login.php")
+            wait_for_page_load(driver)
+            print("로그인 페이지가 열렸습니다. HUD에서 로그인 정보를 입력해 주세요.")
+        except Exception as e:
+            print(f"서버 연결 오류: {str(e)}")
+            
+            # HUD 창이 나타날 때까지 대기
+            time.sleep(3)
+            if shared_data.get("login_button"):
+                shared_data["login_button"].config(state=tk.NORMAL)
+            
+            # 로그인 상태 레이블 접근 및 메시지 업데이트
+            login_status_var = shared_data.get("login_status_var")
+            if login_status_var:
+                if "ERR_CONNECTION_TIMED_OUT" in str(e) or "RemoteDisconnected" in str(e):
+                    login_status_var.set("학교 서버와 연결할 수 없습니다. 인터넷 연결을 확인하거나 잠시 후 다시 시도해주세요.")
+                else:
+                    login_status_var.set(f"서버 연결 오류: {str(e)}")
+            
+            # 로그인 이벤트 재설정 및 다시 시도 준비
+            shared_data["login_attempted"] = False
+            if shared_data.get("login_event"):
+                shared_data["login_event"].clear()
+            
+            # 프로그램 종료하지 않고 대기
+            print("학교 서버와 연결할 수 없습니다. 다시 시도해주세요.")
+            
+            # 다시 로그인 대기
+            print("재연결 및 로그인을 기다립니다...")
+            login_success = login_event.wait(timeout=300)  # 5분간 대기
+            
+            # 여전히 연결 실패 상태라면 종료
+            if not shared_data.get("login_successful", False):
+                if shared_data.get("exit", False):
+                    print("사용자에 의해 프로그램이 종료되었습니다.")
+                else:
+                    print("서버 연결 재시도 시간이 초과되었습니다. 프로그램을 종료합니다.")
+                return
         
         # 로그인 완료 대기
         login_timeout = 300  # 5분
@@ -615,8 +662,31 @@ def main():
             return
             
         if not shared_data.get("login_successful", False):
-            print("로그인에 실패했습니다. 프로그램을 종료합니다.")
-            return
+            print("로그인에 실패했습니다. 다시 로그인을 시도하세요.")
+            
+            # 로그인 버튼 활성화하여 재시도할 수 있도록 함
+            if shared_data.get("login_button"):
+                shared_data["login_button"].config(state=tk.NORMAL)
+                
+            # 로그인 상태 메시지 업데이트
+            if shared_data.get("login_status_var"):
+                shared_data["login_status_var"].set("로그인에 실패했습니다. 다시 시도해주세요.")
+                
+            # 로그인 이벤트 재설정
+            shared_data["login_attempted"] = False
+            login_event.clear()
+            
+            # 다시 로그인 대기
+            print("재로그인을 기다립니다...")
+            login_success = login_event.wait(timeout=300)  # 5분간 대기
+            
+            # 여전히 로그인 실패 상태라면 종료
+            if not shared_data.get("login_successful", False):
+                if shared_data.get("exit", False):
+                    print("사용자에 의해 프로그램이 종료되었습니다.")
+                else:
+                    print("로그인 재시도 시간이 초과되었습니다. 프로그램을 종료합니다.")
+                return
         
         print("로그인이 성공적으로 완료되었습니다.")
         due_period = shared_data.get("due_period", 7)
@@ -724,304 +794,323 @@ def main():
                 continue
         
         print("\n강좌 목록을 수집 중...")
-        driver.get("https://ecampus.smu.ac.kr/")
-        wait_for_page_load(driver, 5)
-        
-        course_links = []
-        course_elems = driver.find_elements(By.CSS_SELECTOR, ".course_box, .coursebox, .course-listitem")
-        
-        for elem in course_elems:
-            try:
-                links = elem.find_elements(By.TAG_NAME, "a")
-                for link in links:
-                    href = link.get_attribute("href")
-                    if href and "course/view.php?id=" in href:
-                        title = link.text.strip().replace("[천안]", "").strip()
-                        if title:
-                            course_links.append((href, title))
-                            break
-            except:
-                continue
-        
-        if len(course_links) < 3:
-            all_links = driver.find_elements(By.TAG_NAME, "a")
-            for link in all_links:
+        try:
+            driver.get("https://ecampus.smu.ac.kr/")
+            wait_for_page_load(driver, 5)
+        except Exception as e:
+            print(f"메인페이지 접속 오류: {str(e)}")
+            if "ERR_CONNECTION_TIMED_OUT" in str(e) or "RemoteDisconnected" in str(e):
+                if shared_data.get("status_label"):
+                    shared_data["status_label"].config(text="학교 서버와 연결할 수 없습니다. 인터넷 연결을 확인해주세요.")
+            else:
+                if shared_data.get("status_label"):
+                    shared_data["status_label"].config(text=f"서버 오류: {str(e)}")
+            # 계속 실행 (다음 단계로 진행)
+            course_links = []  # 빈 리스트로 초기화
+        else:  # 오류가 없을 경우 실행됨
+            course_links = []
+            course_elems = driver.find_elements(By.CSS_SELECTOR, ".course_box, .coursebox, .course-listitem")
+            
+            for elem in course_elems:
                 try:
-                    href = link.get_attribute("href")
-                    if href and "course/view.php?id=" in href:
-                        title = link.text.strip().replace("[천안]", "").strip()
-                        if title and len(title) > 3 and (href, title) not in course_links:
-                            course_links.append((href, title))
+                    links = elem.find_elements(By.TAG_NAME, "a")
+                    for link in links:
+                        href = link.get_attribute("href")
+                        if href and "course/view.php?id=" in href:
+                            title = link.text.strip().replace("[천안]", "").strip()
+                            if title:
+                                course_links.append((href, title))
+                                break
                 except:
                     continue
-        
-        print(f"{len(course_links)}개 강좌 발견")
-        
-        for idx, (course_url, course_title) in enumerate(course_links):
-            if not shared_data["running"] or shared_data["exit"]:
-                if shared_data["exit"]: return
-                print("크롤링이 일시 중단되었습니다. HUD에서 '재시작' 버튼을 누르면 계속됩니다.")
-                while not shared_data["running"] and not shared_data["exit"]:
-                    time.sleep(1)
-                if shared_data["exit"]: return
-                print("크롤링을 재개합니다.")
             
-            print(f"\n[{idx+1}/{len(course_links)}] '{course_title}' 강좌 처리 중...")
-            
-            course_id_match = re.search(r'id=(\d+)', course_url)
-            if course_id_match:
-                course_id = course_id_match.group(1)
-                
-                try:
-                    process_bulk_page(driver, f"https://ecampus.smu.ac.kr/mod/assign/index.php?id={course_id}", 
-                                     course_title, "과제", all_contents, processed_items, shared_data)
-                except Exception as e:
-                    print(f"과제 일괄 페이지 처리 오류: {str(e)}")
-                
-                try:
-                    process_bulk_page(driver, f"https://ecampus.smu.ac.kr/mod/econtents/index.php?id={course_id}", 
-                                     course_title, "영상", all_contents, processed_items, shared_data)
-                except Exception as e:
-                    print(f"영상 일괄 페이지 처리 오류: {str(e)}")
-            
-            try:
-                driver.get(course_url)
-                wait_for_page_load(driver, 5)
-                
-                activity_items = driver.find_elements(By.CSS_SELECTOR, ".activity, .modtype_assign, .modtype_econtents, .activityinstance, .activity-item")
-                
-                for item in activity_items:
+            if len(course_links) < 3:
+                all_links = driver.find_elements(By.TAG_NAME, "a")
+                for link in all_links:
                     try:
-                        item_html = item.get_attribute("outerHTML")
-                        
-                        if not ("mod/assign" in item_html or "mod/econtents" in item_html):
-                            continue
+                        href = link.get_attribute("href")
+                        if href and "course/view.php?id=" in href:
+                            title = link.text.strip().replace("[천안]", "").strip()
+                            if title and len(title) > 3 and (href, title) not in course_links:
+                                course_links.append((href, title))
+                    except:
+                        continue
+            
+            print(f"{len(course_links)}개 강좌 발견")
+            
+            for idx, (course_url, course_title) in enumerate(course_links):
+                if not shared_data["running"] or shared_data["exit"]:
+                    if shared_data["exit"]: return
+                    print("크롤링이 일시 중단되었습니다. HUD에서 '재시작' 버튼을 누르면 계속됩니다.")
+                    while not shared_data["running"] and not shared_data["exit"]:
+                        time.sleep(1)
+                    if shared_data["exit"]: return
+                    print("크롤링을 재개합니다.")
+                
+                print(f"\n[{idx+1}/{len(course_links)}] '{course_title}' 강좌 처리 중...")
+                
+                course_id_match = re.search(r'id=(\d+)', course_url)
+                if course_id_match:
+                    course_id = course_id_match.group(1)
+                    
+                    try:
+                        process_bulk_page(driver, f"https://ecampus.smu.ac.kr/mod/assign/index.php?id={course_id}", 
+                                         course_title, "과제", all_contents, processed_items, shared_data)
+                    except Exception as e:
+                        print(f"과제 일괄 페이지 처리 오류: {str(e)}")
+                    
+                    try:
+                        process_bulk_page(driver, f"https://ecampus.smu.ac.kr/mod/econtents/index.php?id={course_id}", 
+                                         course_title, "영상", all_contents, processed_items, shared_data)
+                    except Exception as e:
+                        print(f"영상 일괄 페이지 처리 오류: {str(e)}")
+                
+                try:
+                    driver.get(course_url)
+                    wait_for_page_load(driver, 5)
+                except Exception as e:
+                    print(f"강좌 페이지 접속 오류: {str(e)}")
+                    if "ERR_CONNECTION_TIMED_OUT" in str(e) or "RemoteDisconnected" in str(e):
+                        if not shared_data.get("exit", False) and shared_data.get("status_label"):
+                            shared_data["status_label"].config(text="학교 서버와 연결할 수 없습니다. 인터넷 연결을 확인해주세요.")
+                    # 다음 강좌로 진행
+                    continue
+                
+                try:
+                    activity_items = driver.find_elements(By.CSS_SELECTOR, ".activity, .modtype_assign, .modtype_econtents, .activityinstance, .activity-item")
+                    
+                    for item in activity_items:
+                        try:
+                            item_html = item.get_attribute("outerHTML")
                             
-                        links = item.find_elements(By.TAG_NAME, "a")
-                        if not links:
-                            continue
-                            
-                        link = links[0].get_attribute("href")
-                        title = links[0].text.strip()
-                        
-                        if not link or not title:
-                            continue
-                        
-                        if "/mod/assign/view.php" in link or "/mod/econtents/view.php" in link:
-                            continue
-                        
-                        if (title, link) in processed_items:
-                            continue
-                            
-                        processed_items.add((title, link))
-                        
-                        content_type = "기타"
-                        if "/mod/assign/" in link:
-                            content_type = "과제"
-                        elif "/mod/econtents/" in link:
-                            content_type = "영상"
-                        else:
-                            continue
-                        
-                        deadline = None
-                        item_text = item.text
-                        
-                        date_patterns = [
-                            r'(\d{4})[-년/\.]\s*(\d{1,2})[-월/\.]\s*(\d{1,2})',
-                            r'(\d{2})[-/\.]\s*(\d{1,2})[-/\.]\s*(\d{1,2})',
-                            r'(\d{1,2})\s*[월/]\s*(\d{1,2})'
-                        ]
-                        
-                        for pattern in date_patterns:
-                            date_match = re.search(pattern, item_text)
-                            if date_match:
-                                try:
-                                    if len(date_match.groups()) == 3:
-                                        year = int(date_match.group(1))
-                                        if year < 100:
-                                            year += 2000
-                                        month = int(date_match.group(2))
-                                        day = int(date_match.group(3))
-                                    else:
-                                        month = int(date_match.group(1))
-                                        day = int(date_match.group(2))
-                                        year = datetime.date.today().year
-                                        
-                                    deadline = datetime.date(year, month, day)
-                                    
-                                    if deadline < datetime.date.today():
-                                        deadline = datetime.date(year + 1, month, day)
-                                    
-                                    break
-                                except:
-                                    continue
-                        
-                        if not deadline:
-                            try:
-                                driver.execute_script("window.open(arguments[0]);", link)
-                                driver.switch_to.window(driver.window_handles[-1])
-                                wait_for_page_load(driver, 5)
+                            if not ("mod/assign" in item_html or "mod/econtents" in item_html):
+                                continue
                                 
-                                page_text = driver.find_element(By.TAG_NAME, "body").text
-                                for pattern in date_patterns:
-                                    date_match = re.search(pattern, page_text)
-                                    if date_match:
-                                        try:
-                                            if len(date_match.groups()) == 3:
-                                                year = int(date_match.group(1))
-                                                if year < 100:
-                                                    year += 2000
-                                                month = int(date_match.group(2))
-                                                day = int(date_match.group(3))
-                                            else:
-                                                month = int(date_match.group(1))
-                                                day = int(date_match.group(2))
-                                                year = datetime.date.today().year
-                                                
-                                            deadline = datetime.date(year, month, day)
-                                            
-                                            if deadline < datetime.date.today():
-                                                if len(date_match.groups()) == 2:
-                                                    deadline = datetime.date(year + 1, month, day)
-                                            
-                                            break
-                                        except:
-                                            continue
+                            links = item.find_elements(By.TAG_NAME, "a")
+                            if not links:
+                                continue
                                 
-                                status = "확인필요"
-                                if content_type == "과제":
-                                    status_elems = driver.find_elements(By.CSS_SELECTOR, ".submissionstatustable .c1, .statedetails")
-                                    if status_elems:
-                                        status_text = status_elems[0].text.strip()
-                                        if "미제출" in status_text:
-                                            status = "미제출"
-                                        elif "제출" in status_text and "미제출" not in status_text:
-                                            status = "제출됨"
-                                elif content_type == "영상":
-                                    progress_elems = driver.find_elements(By.CSS_SELECTOR, ".progress-bar, .progresstext")
-                                    if progress_elems:
-                                        progress_text = progress_elems[0].text.strip()
-                                        if "100%" in progress_text or "완료" in progress_text:
-                                            status = "제출됨"
+                            link = links[0].get_attribute("href")
+                            title = links[0].text.strip()
+                            
+                            if not link or not title:
+                                continue
+                            
+                            if "/mod/assign/view.php" in link or "/mod/econtents/view.php" in link:
+                                continue
+                            
+                            if (title, link) in processed_items:
+                                continue
+                                
+                            processed_items.add((title, link))
+                            
+                            content_type = "기타"
+                            if "/mod/assign/" in link:
+                                content_type = "과제"
+                            elif "/mod/econtents/" in link:
+                                content_type = "영상"
+                            else:
+                                continue
+                            
+                            deadline = None
+                            item_text = item.text
+                            
+                            date_patterns = [
+                                r'(\d{4})[-년/\.]\s*(\d{1,2})[-월/\.]\s*(\d{1,2})',
+                                r'(\d{2})[-/\.]\s*(\d{1,2})[-/\.]\s*(\d{1,2})',
+                                r'(\d{1,2})\s*[월/]\s*(\d{1,2})'
+                            ]
+                            
+                            for pattern in date_patterns:
+                                date_match = re.search(pattern, item_text)
+                                if date_match:
+                                    try:
+                                        if len(date_match.groups()) == 3:
+                                            year = int(date_match.group(1))
+                                            if year < 100:
+                                                year += 2000
+                                            month = int(date_match.group(2))
+                                            day = int(date_match.group(3))
                                         else:
-                                            status = "미제출"
-                                
-                                context = "세부 정보 없음"
+                                            month = int(date_match.group(1))
+                                            day = int(date_match.group(2))
+                                            year = datetime.date.today().year
+                                            
+                                        deadline = datetime.date(year, month, day)
+                                        
+                                        if deadline < datetime.date.today():
+                                            deadline = datetime.date(year + 1, month, day)
+                                        
+                                        break
+                                    except:
+                                        continue
+                            
+                            if not deadline:
                                 try:
-                                    main_content = driver.find_element(By.ID, "region-main")
-                                    context = main_content.text[:150] + "..."
-                                except:
-                                    pass
-                                
-                                driver.close()
-                                driver.switch_to.window(driver.window_handles[0])
-                            except Exception as e:
-                                print(f"상세 페이지 확인 오류: {str(e)}")
-                                
-                                if len(driver.window_handles) > 1:
+                                    driver.execute_script("window.open(arguments[0]);", link)
+                                    driver.switch_to.window(driver.window_handles[-1])
+                                    wait_for_page_load(driver, 5)
+                                    
+                                    page_text = driver.find_element(By.TAG_NAME, "body").text
+                                    for pattern in date_patterns:
+                                        date_match = re.search(pattern, page_text)
+                                        if date_match:
+                                            try:
+                                                if len(date_match.groups()) == 3:
+                                                    year = int(date_match.group(1))
+                                                    if year < 100:
+                                                        year += 2000
+                                                    month = int(date_match.group(2))
+                                                    day = int(date_match.group(3))
+                                                else:
+                                                    month = int(date_match.group(1))
+                                                    day = int(date_match.group(2))
+                                                    year = datetime.date.today().year
+                                                    
+                                                deadline = datetime.date(year, month, day)
+                                                
+                                                if deadline < datetime.date.today():
+                                                    if len(date_match.groups()) == 2:
+                                                        deadline = datetime.date(year + 1, month, day)
+                                                
+                                                break
+                                            except:
+                                                continue
+                                    
+                                    status = "확인필요"
+                                    if content_type == "과제":
+                                        status_elems = driver.find_elements(By.CSS_SELECTOR, ".submissionstatustable .c1, .statedetails")
+                                        if status_elems:
+                                            status_text = status_elems[0].text.strip()
+                                            if "미제출" in status_text:
+                                                status = "미제출"
+                                            elif "제출" in status_text and "미제출" not in status_text:
+                                                status = "제출됨"
+                                    elif content_type == "영상":
+                                        progress_elems = driver.find_elements(By.CSS_SELECTOR, ".progress-bar, .progresstext")
+                                        if progress_elems:
+                                            progress_text = progress_elems[0].text.strip()
+                                            if "100%" in progress_text or "완료" in progress_text:
+                                                status = "제출됨"
+                                            else:
+                                                status = "미제출"
+                                    
+                                    context = "세부 정보 없음"
+                                    try:
+                                        main_content = driver.find_element(By.ID, "region-main")
+                                        context = main_content.text[:150] + "..."
+                                    except:
+                                        pass
+                                    
                                     driver.close()
                                     driver.switch_to.window(driver.window_handles[0])
-                                
+                                except Exception as e:
+                                    print(f"상세 페이지 확인 오류: {str(e)}")
+                                    
+                                    if len(driver.window_handles) > 1:
+                                        driver.close()
+                                        driver.switch_to.window(driver.window_handles[0])
+                                    
+                                    # 기간 설정 적용
+                                    deadline = datetime.date.today() + datetime.timedelta(days=shared_data.get("due_period", 7))
+                                    status = "확인필요"
+                                    context = item_text
+                            
+                            if not deadline:
                                 # 기간 설정 적용
                                 deadline = datetime.date.today() + datetime.timedelta(days=shared_data.get("due_period", 7))
-                                status = "확인필요"
-                                context = item_text
-                        
-                        if not deadline:
-                            # 기간 설정 적용
-                            deadline = datetime.date.today() + datetime.timedelta(days=shared_data.get("due_period", 7))
-                        
-                        # 사용자가 선택한 기간 적용
-                        due_period = shared_data.get("due_period", 7)
-                        diff_days = (deadline - datetime.date.today()).days
-                        if not (0 <= diff_days <= due_period):
+                            
+                            # 사용자가 선택한 기간 적용
+                            due_period = shared_data.get("due_period", 7)
+                            diff_days = (deadline - datetime.date.today()).days
+                            if not (0 <= diff_days <= due_period):
+                                continue
+                            
+                            print(f"{content_type} 발견: {title}, 마감일: {deadline}")
+                            
+                            all_contents.append({
+                                "course": course_title,
+                                "title": title,
+                                "link": link,
+                                "due_date": str(deadline),
+                                "status": status if 'status' in locals() else "확인필요",
+                                "context": context if 'context' in locals() else item_text,
+                                "type": content_type
+                            })
+                        except Exception as e:
+                            print(f"활동 항목 처리 오류: {str(e)}")
                             continue
-                        
-                        print(f"{content_type} 발견: {title}, 마감일: {deadline}")
-                        
-                        all_contents.append({
-                            "course": course_title,
-                            "title": title,
-                            "link": link,
-                            "due_date": str(deadline),
-                            "status": status if 'status' in locals() else "확인필요",
-                            "context": context if 'context' in locals() else item_text,
-                            "type": content_type
-                        })
-                    except Exception as e:
-                        print(f"활동 항목 처리 오류: {str(e)}")
-                        continue
-                        
-            except Exception as e:
-                print(f"강좌 페이지 처리 오류: {str(e)}")
-                continue
-        
-        for content in shared_data["contents"]:
-            course_name = content['course']
-            if "천안CTL" in course_name:
-                content['category'] = "천안CTL"
-                content['course'] = course_name.replace("천안CTL", "").strip()
-            elif "SM-CLASS" in course_name:
-                content['category'] = "SM-CLASS"
-                content['course'] = course_name.replace("SM-CLASS", "").strip()
-            elif "교과 기타" in course_name:
-                content['category'] = "교과 기타"
-                content['course'] = course_name.replace("교과 기타", "").strip()
-            else:
-                content['category'] = "일반"
-        
-        all_contents.sort(key=lambda x: x['due_date'])
-        shared_data["contents"] = all_contents
-        shared_data["updated"] = True
-        
-        shared_data["crawling_complete"] = True  # 크롤링 완료 플래그 설정
-        print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
-
-        # 크롤링 완료 즉시 버튼 상태 변경 및 브라우저 종료 (메인 스레드에서 직접 처리)
-        if shared_data["control_var"] and shared_data["control_button"]:
-            shared_data["control_var"].set("완료됨")
-            shared_data["control_button"].config(state=tk.DISABLED)
-        
-        # 드라이버 종료를 즉시 실행
-        if shared_data["driver"]:
-            shared_data["driver"].quit()
-            shared_data["driver"] = None
-            print("Selenium 브라우저가 종료되었습니다.")
-
-        while not shared_data["exit"]:
-            if shared_data.get("crawling_complete") and not shared_data["running"]:
-                print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
-                break
-            time.sleep(0.5)
-        
-        print("\n===== 수집 완료 =====")
-        print(f"총 {len(all_contents)}개 항목 발견")
-        
-        if all_contents:
-            print(f"\n===== {due_period}일 이내 마감 예정 콘텐츠 목록 =====")
-            for idx, content in enumerate(all_contents):
-                deadline_date = datetime.datetime.strptime(content['due_date'], '%Y-%m-%d').date()
-                deadline = datetime.datetime.combine(deadline_date, datetime.time(23, 59, 59))
-                remaining = calculate_remaining_time(deadline)
-                
-                print(f"\n[{idx+1}] {content['course']} - {content['title']} ({content['type']})")
-                print(f"마감일: {content['due_date']}")
-                print(f"남은 시간: {remaining}")
-                print(f"상태: {content['status']}")
-                print(f"링크: {content['link']}")
-                print("-" * 50)
+                            
+                except Exception as e:
+                    print(f"강좌 페이지 처리 오류: {str(e)}")
+                    continue
             
-            print(f"\n총 {len(all_contents)}개의 콘텐츠가 {due_period}일 이내 마감 예정입니다.")
-        else:
-            print(f"\n{due_period}일 이내 마감 예정인 콘텐츠가 없습니다.")
-        
-        print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
-        
-        while not shared_data["exit"]:
-            if shared_data.get("crawling_complete") and not shared_data["running"]:
-                print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
-                break
-            time.sleep(0.5)  # 상태 확인 주기를 더 짧게 설정
+            for content in shared_data["contents"]:
+                course_name = content['course']
+                if "천안CTL" in course_name:
+                    content['category'] = "천안CTL"
+                    content['course'] = course_name.replace("천안CTL", "").strip()
+                elif "SM-CLASS" in course_name:
+                    content['category'] = "SM-CLASS"
+                    content['course'] = course_name.replace("SM-CLASS", "").strip()
+                elif "교과 기타" in course_name:
+                    content['category'] = "교과 기타"
+                    content['course'] = course_name.replace("교과 기타", "").strip()
+                else:
+                    content['category'] = "일반"
+            
+            all_contents.sort(key=lambda x: x['due_date'])
+            shared_data["contents"] = all_contents
+            shared_data["updated"] = True
+            
+            shared_data["crawling_complete"] = True  # 크롤링 완료 플래그 설정
+            print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
+
+            # 크롤링 완료 즉시 버튼 상태 변경 및 브라우저 종료 (메인 스레드에서 직접 처리)
+            if shared_data["control_var"] and shared_data["control_button"]:
+                shared_data["control_var"].set("완료됨")
+                shared_data["control_button"].config(state=tk.DISABLED)
+            
+            # 드라이버 종료를 즉시 실행
+            if shared_data["driver"]:
+                shared_data["driver"].quit()
+                shared_data["driver"] = None
+                print("Selenium 브라우저가 종료되었습니다.")
+
+            while not shared_data["exit"]:
+                if shared_data.get("crawling_complete") and not shared_data["running"]:
+                    print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
+                    break
+                time.sleep(0.5)
+            
+            print("\n===== 수집 완료 =====")
+            print(f"총 {len(all_contents)}개 항목 발견")
+            
+            if all_contents:
+                print(f"\n===== {due_period}일 이내 마감 예정 콘텐츠 목록 =====")
+                for idx, content in enumerate(all_contents):
+                    deadline_date = datetime.datetime.strptime(content['due_date'], '%Y-%m-%d').date()
+                    deadline = datetime.datetime.combine(deadline_date, datetime.time(23, 59, 59))
+                    remaining = calculate_remaining_time(deadline)
+                    
+                    print(f"\n[{idx+1}] {content['course']} - {content['title']} ({content['type']})")
+                    print(f"마감일: {content['due_date']}")
+                    print(f"남은 시간: {remaining}")
+                    print(f"상태: {content['status']}")
+                    print(f"링크: {content['link']}")
+                    print("-" * 50)
+                
+                print(f"\n총 {len(all_contents)}개의 콘텐츠가 {due_period}일 이내 마감 예정입니다.")
+            else:
+                print(f"\n{due_period}일 이내 마감 예정인 콘텐츠가 없습니다.")
+            
+            print("\n크롤링이 완료되었습니다. 결과를 확인하세요.")
+            
+            while not shared_data["exit"]:
+                if shared_data.get("crawling_complete") and not shared_data["running"]:
+                    print("크롤링이 완료되었으며, 브라우저를 종료합니다.")
+                    break
+                time.sleep(0.5)  # 상태 확인 주기를 더 짧게 설정
     
     except Exception as e:
         print(f"프로그램 실행 중 오류 발생: {str(e)}")
